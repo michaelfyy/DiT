@@ -1,0 +1,17 @@
+name: DiT
+channels:
+    - conda-forge
+    - defaults
+dependencies:
+    - pip
+    - python>=3.12
+    - pip:
+          - accelerate
+          - diffusers
+          - einops
+          - pillow
+          - pyyaml
+          - timm
+          - torch
+          - torchaudio
+          - torchvision
