@@ -6,6 +6,7 @@ dependencies:
     - pip
     - python>=3.12
     - pip:
+          - kaggle
           - accelerate
           - diffusers
           - einops
