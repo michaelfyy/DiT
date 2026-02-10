@@ -13,7 +13,6 @@ export RUN_NAME="DiT-XL2-imagenet256"
 # NOTE ctrl d ALL THREE of above to modify job-name, output, and RUN_NAME (which should all be the same)
 export MODEL_NAME="${RUN_NAME%%-*}"
 export MODEL_SIZE="${RUN_NAME#*-}"; export MODEL_SIZE="${MODEL_SIZE%%-*}"
-mkdir -p logs/slurm/
 module purge
 
 
@@ -30,9 +29,14 @@ echo "--------------------------------------------------"
 # Paths / knobs (edit these)
 ############################################
 # Set your repo root (common pattern: job_configs/ is inside the repo)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
+  REPO_ROOT="$(cd "$SLURM_SUBMIT_DIR" && pwd)"
+else
+  REPO_ROOT="$(pwd)"
+fi
 cd "$REPO_ROOT"
+
+mkdir -p logs/slurm/
 
 # REQUIRED: point to your ImageNet train folder (or export DATA_PATH before submission)
 : "${DATA_PATH:="$REPO_ROOT/../datasets/ILSVRC/Data/CLS-LOC/train"}"
