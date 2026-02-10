@@ -12,8 +12,8 @@ usage() {
     echo "  $0 <job_config_script>"
     echo "  $0 <HEADER_TYPE> <job_config_script>"
     echo "Examples:"
-    echo "  $0 ./job_configs/train_model.sh"
-    echo "  $0 ncsa_a100 ./job_configs/train_model.sh"
+    echo "  $0 ./job_scripts/train_model.sh"
+    echo "  $0 ncsa_a100 ./job_scripts/train_model.sh"
     exit 1
 }
 

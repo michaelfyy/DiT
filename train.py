@@ -95,6 +95,13 @@ def center_crop_arr(pil_image, image_size):
     crop_x = (arr.shape[1] - image_size) // 2
     return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
 
+class CenterCropArrTransform:
+    def __init__(self, image_size: int):
+        self.image_size = image_size
+
+    def __call__(self, pil_image):
+        return center_crop_arr(pil_image, self.image_size)
+
 
 #################################################################################
 #                                  Training Loop                                #
@@ -143,7 +150,8 @@ def main(args):
 
     # Setup data:
     transform = transforms.Compose([
-        transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
+        # transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)), # pickling error, fixed with wrapper
+        CenterCropArrTransform(args.image_size),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
@@ -181,7 +189,7 @@ def main(args):
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
-            model_kwargs = dict(y=y)
+            model_kwargs = dict(label=y)
             loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
             loss = loss_dict["loss"].mean()
             opt.zero_grad()

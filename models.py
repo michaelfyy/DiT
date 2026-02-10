@@ -19,29 +19,32 @@ class Patchify(nn.Module):
         self.d = d
         self.img_size = img_size
         self.in_chans = in_chans
+        self.patch_embedder = PatchEmbed(img_size=self.img_size, patch_size=self.p, in_chans=self.in_chans, embed_dim=self.d)
 
     def get_positional_embedding(self, x): # x.shape = torch.Size[(B, T, D)]
         sequence_length = x.shape[-2]
         hidden_dim = x.shape[-1]
 
-        positional_embedding = torch.Tensor(sequence_length, hidden_dim)
+        device = x.device
+        pos_dtype = torch.float32
+        positions = torch.arange(sequence_length, device=device, dtype=pos_dtype)
+
+        positional_embedding = torch.empty(sequence_length, hidden_dim, device=device, dtype=pos_dtype)
         for i in range(hidden_dim):
             if (i % 2 == 0):
-                positional_embedding[:,i] = torch.sin(torch.arange(0, sequence_length) / (10000**(i/hidden_dim)))
+                positional_embedding[:,i] = torch.sin(positions / (10000**(i/hidden_dim)))
             else:
-                positional_embedding[:,i] = torch.cos(torch.arange(0, sequence_length) / (10000**((i-1)/hidden_dim)))
+                positional_embedding[:,i] = torch.cos(positions / (10000**((i-1)/hidden_dim)))
 
-        return positional_embedding
+        return positional_embedding.to(dtype=x.dtype)
 
     def forward(self, x): # x.shape = torch.Size[(B, 4, 32, 32)] (B, C, H, W)
 
-        # patch embed
-        patch_embedder = PatchEmbed(img_size=self.img_size, patch_size=self.p, in_chans=self.in_chans, embed_dim=self.d)
-        x = patch_embedder(x)
+        x = self.patch_embedder(x)
 
         # add positional encoding
         positional_embedding = self.get_positional_embedding(x)
-        x += positional_embedding
+        x = x + positional_embedding
 
         return x
     

@@ -52,4 +52,4 @@ python train.py \
   --results-dir "$RESULTS_DIR" \
   --image-size 256 \
   --global-batch-size "$BATCH_SIZE" \
-  --num-workers 4
+  --num-workers 1
