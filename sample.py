@@ -14,7 +14,7 @@ For a simple single-GPU/CPU sampling script, see sample.py.
 """
 import torch
 from models import DiT_models
-from DiT_from_scratch.download import find_model
+from download import find_model
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 from tqdm import tqdm
@@ -64,7 +64,7 @@ def main(args):
     # Load model:
     latent_size = args.image_size // 8
     model = DiT_models[args.model](
-        input_size=latent_size,
+        img_size=latent_size,
         num_classes=args.num_classes
     ).to(device)
     # Auto-download a pre-trained model or load a custom DiT checkpoint from train.py:
@@ -97,7 +97,7 @@ def main(args):
     total = 0
     for _ in pbar:
         # Sample inputs:
-        z = torch.randn(n, model.in_channels, latent_size, latent_size, device=device)
+        z = torch.randn(n, model.in_chans, latent_size, latent_size, device=device)
         y = torch.randint(0, args.num_classes, (n,), device=device)
 
         # Setup classifier-free guidance:

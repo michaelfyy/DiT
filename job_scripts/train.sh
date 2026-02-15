@@ -1,5 +1,7 @@
+### USAGE: conda activate DiT \ ./slurm_executor.sh ncsa_a100 ./job_scripts/train.sh ###
+
 ### ADDITIONAL RUN INFO ###
-#SBATCH --time=12:00:00
+#SBATCH --time=48:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
 #SBATCH --ntasks-per-node=1
@@ -42,18 +44,16 @@ mkdir -p logs/slurm/
 : "${DATA_PATH:="$REPO_ROOT/../datasets/ILSVRC/Data/CLS-LOC/train"}"
 
 # Results directory (override if you want)
-: "${RESULTS_DIR:="$REPO_ROOT/../results"}"
-
-# Batch size for single-GPU training script (override if you want)
-: "${BATCH_SIZE:=32}"
+: "${RESULTS_DIR:="$REPO_ROOT/train_results"}"
 
 ############################################
 # Train command (single GPU, no DDP)
 ############################################
 python train.py \
-  --model DiT-XL/2 \
+  --model DiT-S/2 \
   --data-path "$DATA_PATH" \
   --results-dir "$RESULTS_DIR" \
   --image-size 256 \
-  --global-batch-size "$BATCH_SIZE" \
-  --num-workers 1
+  --global-batch-size 32 \
+  --num-workers 12 \
+  --ckpt-every 5000
