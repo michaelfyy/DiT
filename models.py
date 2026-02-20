@@ -61,33 +61,6 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
     return emb
 
-class Patchify(nn.Module):
-    def __init__(
-        self, 
-        patch_embedder,
-        p=4, 
-        d=768,
-        img_size=32,
-        in_chans=4,
-    ):
-        super().__init__()
-        self.p = p
-        self.d = d
-        self.img_size = img_size
-        self.in_chans = in_chans
-        self.patch_embedder = patch_embedder
-
-    def forward(self, x): # x.shape = torch.Size[(B, 4, 32, 32)] (B, C, H, W)
-        x = self.patch_embedder(x)  # (B, T, D)
-
-        # add positional encoding
-        positional_embedding = get_2d_sincos_pos_embed(self.d, self.img_size//self.p)
-        positional_embedding = torch.from_numpy(positional_embedding).float().unsqueeze(0).to(x.device)
-        x += positional_embedding
-
-        return x
-    
-
 class Time_Embedder(nn.Module):
     def __init__(
             self,
@@ -298,7 +271,6 @@ class DiT(nn.Module):
         x = self.patch_embedder(x)  # (B, T, D)
         x += self.positional_embedding.to(x.device)
         return x
-        
 
     def forward(self, x, time, label): # x.shape = torch.Size[(B, 4, 32, 32)] (B, C, H, W)
         x = self.embed_x(x)
