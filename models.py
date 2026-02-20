@@ -1,4 +1,5 @@
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -6,9 +7,64 @@ from timm.models.vision_transformer import PatchEmbed
 from einops import rearrange
 
 
+#################################################################################
+#                   Sine/Cosine Positional Embedding Functions                  #
+#################################################################################
+# https://github.com/facebookresearch/mae/blob/main/util/pos_embed.py
+
+def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=0):
+    """
+    grid_size: int of the grid height and width
+    return:
+    pos_embed: [grid_size*grid_size, embed_dim] or [1+grid_size*grid_size, embed_dim] (w/ or w/o cls_token)
+    """
+    grid_h = np.arange(grid_size, dtype=np.float32)
+    grid_w = np.arange(grid_size, dtype=np.float32)
+    grid = np.meshgrid(grid_w, grid_h)  # here w goes first
+    grid = np.stack(grid, axis=0)
+
+    grid = grid.reshape([2, 1, grid_size, grid_size])
+    pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid)
+    if cls_token and extra_tokens > 0:
+        pos_embed = np.concatenate([np.zeros([extra_tokens, embed_dim]), pos_embed], axis=0)
+    return pos_embed
+
+
+def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
+    assert embed_dim % 2 == 0
+
+    # use half of dimensions to encode grid_h
+    emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0])  # (H*W, D/2)
+    emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # (H*W, D/2)
+
+    emb = np.concatenate([emb_h, emb_w], axis=1) # (H*W, D)
+    return emb
+
+
+def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
+    """
+    embed_dim: output dimension for each position
+    pos: a list of positions to be encoded: size (M,)
+    out: (M, D)
+    """
+    assert embed_dim % 2 == 0
+    omega = np.arange(embed_dim // 2, dtype=np.float64)
+    omega /= embed_dim / 2.
+    omega = 1. / 10000**omega  # (D/2,)
+
+    pos = pos.reshape(-1)  # (M,)
+    out = np.einsum('m,d->md', pos, omega)  # (M, D/2), outer product
+
+    emb_sin = np.sin(out) # (M, D/2)
+    emb_cos = np.cos(out) # (M, D/2)
+
+    emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
+    return emb
+
 class Patchify(nn.Module):
     def __init__(
         self, 
+        patch_embedder,
         p=4, 
         d=768,
         img_size=32,
@@ -19,32 +75,15 @@ class Patchify(nn.Module):
         self.d = d
         self.img_size = img_size
         self.in_chans = in_chans
-        self.patch_embedder = PatchEmbed(img_size=self.img_size, patch_size=self.p, in_chans=self.in_chans, embed_dim=self.d)
-
-    def get_positional_embedding(self, x): # x.shape = torch.Size[(B, T, D)]
-        sequence_length = x.shape[-2]
-        hidden_dim = x.shape[-1]
-
-        device = x.device
-        pos_dtype = torch.float32
-        positions = torch.arange(sequence_length, device=device, dtype=pos_dtype)
-
-        positional_embedding = torch.empty(sequence_length, hidden_dim, device=device, dtype=pos_dtype)
-        for i in range(hidden_dim):
-            if (i % 2 == 0):
-                positional_embedding[:,i] = torch.sin(positions / (10000**(i/hidden_dim)))
-            else:
-                positional_embedding[:,i] = torch.cos(positions / (10000**((i-1)/hidden_dim)))
-
-        return positional_embedding.to(dtype=x.dtype)
+        self.patch_embedder = patch_embedder
 
     def forward(self, x): # x.shape = torch.Size[(B, 4, 32, 32)] (B, C, H, W)
-
-        x = self.patch_embedder(x)
+        x = self.patch_embedder(x)  # (B, T, D)
 
         # add positional encoding
-        positional_embedding = self.get_positional_embedding(x)
-        x = x + positional_embedding
+        positional_embedding = get_2d_sincos_pos_embed(self.d, self.img_size//self.p)
+        positional_embedding = torch.from_numpy(positional_embedding).float().unsqueeze(0).to(x.device)
+        x += positional_embedding
 
         return x
     
@@ -119,41 +158,6 @@ class AdaLN(nn.Module):
         return gamma1, beta1, alpha1, gamma2, beta2, alpha2 # each is (B, 1, D)
 
 
-class DiT_Block_Base(nn.Module): # like in-context but no conditioning
-    def __init__(
-        self,
-        embedding_dim=768,
-        num_heads=12
-    ):
-        super().__init__()
-
-        self.embedding_dim = embedding_dim
-        self.num_heads = num_heads
-
-        self.norm1 = nn.LayerNorm(embedding_dim)
-        self.norm2 = nn.LayerNorm(embedding_dim)
-        self.mha = nn.MultiheadAttention(embedding_dim, num_heads, batch_first=True)
-
-        self.pointwise_mlp = nn.Sequential(
-            nn.Linear(embedding_dim, embedding_dim * 4),
-            nn.GELU(approximate='tanh'),
-            nn.Linear(embedding_dim * 4, embedding_dim)
-        )
-          
-    def forward(self, x):
-        residual = x
-
-        x = self.norm1(x)
-        attn_output, attn_weights = self.mha(x, x, x)
-        x = residual + attn_output
-
-        residual = x
-        x = self.norm2(x)
-        x = residual + self.pointwise_mlp(x)
-
-        return x
-    
-
 class DiT_Block_AdaLN(nn.Module): # like in-context but no conditioning
     def __init__(
         self,
@@ -165,8 +169,8 @@ class DiT_Block_AdaLN(nn.Module): # like in-context but no conditioning
         self.embedding_dim = embedding_dim
         self.num_heads = num_heads
 
-        self.norm1 = nn.LayerNorm(embedding_dim)
-        self.norm2 = nn.LayerNorm(embedding_dim)
+        self.norm1 = nn.LayerNorm(embedding_dim, elementwise_affine=False, eps=1e-6)
+        self.norm2 = nn.LayerNorm(embedding_dim, elementwise_affine=False, eps=1e-6)
         self.mha = nn.MultiheadAttention(embedding_dim, num_heads, batch_first=True)
         self.adaptive_ln = AdaLN(embedding_dim=embedding_dim)
 
@@ -207,59 +211,21 @@ class FinalLayer(nn.Module):
         self.patch_size = patch_size
         self.img_size = img_size
         self.num_channels = num_channels
-        self.norm = nn.LayerNorm(embedding_dim)
+        self.norm = nn.LayerNorm(embedding_dim, elementwise_affine=False, eps=1e-6)
+        self.adpative_ln_mlp = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(embedding_dim, 2*embedding_dim)
+        )
         self.linear = nn.Linear(embedding_dim, patch_size*patch_size*2*num_channels)
 
-    def forward(self, x):
+    def forward(self, x, c):
         x = self.norm(x)
+        gamma, beta = self.adpative_ln_mlp(c).unsqueeze(1).chunk(2, dim=2)
+        x = (1+gamma)*x + beta
         x = self.linear(x)
         x = rearrange(x, 'b (h w) (p1 p2 c) -> b c (h p1) (w p2)', 
                       p1=self.patch_size, p2=self.patch_size, h=self.img_size // self.patch_size, w=self.img_size // self.patch_size)
         return x
-    
-
-class DiT_Base(nn.Module):
-    def __init__(
-            self,
-            embedding_dim=768,
-            num_heads=12,
-            patch_size=4,
-            n_blocks=28,
-            num_classes=1000,
-            frequency=256,
-            img_size=32,
-            in_chans=4,
-    ):
-        super().__init__()  
-
-        self.embedding_dim = embedding_dim
-        self.num_heads = num_heads
-        self.patch_size = patch_size
-        self.num_classes = num_classes
-        self.img_size = img_size
-        self.in_chans = in_chans
-
-        self.patchifier = Patchify(p=self.patch_size, d=embedding_dim, img_size=img_size, in_chans=in_chans)
-        self.time_embedder = Time_Embedder(embedding_dim=embedding_dim, frequency=frequency)
-        self.label_embedder = Label_Embedder(num_classes=num_classes, embedding_dim=embedding_dim)
-        self.dit_blocks = nn.ModuleList([
-            DiT_Block_Base(embedding_dim=embedding_dim, num_heads=num_heads) for _ in range(n_blocks)
-        ])
-        self.final_layer = FinalLayer(embedding_dim=embedding_dim, patch_size=patch_size, img_size=img_size, num_channels=in_chans)
-        
-
-    def forward(self, x, time, label): # x.shape = torch.Size[(B, 4, 32, 32)] (B, C, H, W)
-        patch_embedding = self.patchifier(x)
-        time_embedding = self.time_embedder(time)
-        label_embedding = self.label_embedder(label)
-
-        tokens = torch.cat([patch_embedding, time_embedding.unsqueeze(1), label_embedding.unsqueeze(1)], dim=1) # add conditioning tokens
-        for dit_block in self.dit_blocks:
-            tokens = dit_block(tokens)
-
-        tokens = tokens[:, :-2, :] # remove conditioning tokens
-        tokens = self.final_layer(tokens)
-        return tokens
     
 
 class DiT(nn.Module):
@@ -283,17 +249,59 @@ class DiT(nn.Module):
         self.img_size = img_size
         self.in_chans = in_chans
 
-        self.patchifier = Patchify(p=self.patch_size, d=embedding_dim, img_size=img_size, in_chans=in_chans)
+        self.patch_embedder = PatchEmbed(img_size=self.img_size, patch_size=self.patch_size, in_chans=self.in_chans, embed_dim=embedding_dim)
+        self.positional_embedding = get_2d_sincos_pos_embed(embedding_dim, img_size//patch_size)
+        self.positional_embedding = torch.from_numpy(self.positional_embedding).float().unsqueeze(0)
         self.time_embedder = Time_Embedder(embedding_dim=embedding_dim, frequency=frequency)
         self.label_embedder = Label_Embedder(num_classes=num_classes, embedding_dim=embedding_dim)
         self.dit_blocks = nn.ModuleList([
             DiT_Block_AdaLN(embedding_dim=embedding_dim, num_heads=num_heads) for _ in range(n_blocks)
         ])
         self.final_layer = FinalLayer(embedding_dim=embedding_dim, patch_size=patch_size, img_size=img_size, num_channels=in_chans)
+
+        # initialize weights
+        self.init_weights()
+
+    def init_weights(self):
+        # GLobal Xavier init for all Linear layers
+        def _basic_init(module):
+            if isinstance(module, nn.Linear):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        self.apply(_basic_init)
+
+        # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
+        w = self.patch_embedder.proj.weight.data
+        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+        nn.init.constant_(self.patch_embedder.proj.bias, 0)
+
+        # Initialize label embedding table:
+        nn.init.normal_(self.label_embedder.embedding.weight, std=0.02)
+
+        # Initialize timestep embedding MLP:
+        nn.init.normal_(self.time_embedder.mlp[0].weight, std=0.02)
+        nn.init.normal_(self.time_embedder.mlp[2].weight, std=0.02)
+
+        # Zero-out AdaLN weights and biases
+        for block in self.dit_blocks:
+            nn.init.constant_(block.adaptive_ln.mlp[-1].weight, 0)
+            nn.init.constant_(block.adaptive_ln.mlp[-1].bias, 0)
+
+        # Zero-out FinalLayer
+        nn.init.constant_(self.final_layer.linear.weight, 0)
+        nn.init.constant_(self.final_layer.linear.bias, 0)
+        nn.init.constant_(self.final_layer.adpative_ln_mlp[-1].weight, 0)
+        nn.init.constant_(self.final_layer.adpative_ln_mlp[-1].bias, 0)
+
+    def embed_x(self, x):
+        x = self.patch_embedder(x)  # (B, T, D)
+        x += self.positional_embedding.to(x.device)
+        return x
         
 
     def forward(self, x, time, label): # x.shape = torch.Size[(B, 4, 32, 32)] (B, C, H, W)
-        x = self.patchifier(x)
+        x = self.embed_x(x)
         time_embedding = self.time_embedder(time)
         label_embedding = self.label_embedder(label)
 
@@ -302,7 +310,7 @@ class DiT(nn.Module):
         for dit_block in self.dit_blocks:
             x = dit_block(x, conditioning)
 
-        x = self.final_layer(x)
+        x = self.final_layer(x, conditioning)
         return x
     
 
